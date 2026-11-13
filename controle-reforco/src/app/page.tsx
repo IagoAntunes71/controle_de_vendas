@@ -151,12 +151,13 @@ export default function ControleReforcoPage() {
 
     // useEffect: Roda UMA VEZ quando a página abre para checar se você já está logado no Supabase
     useEffect(() => {
-        const hoje = new Date();
-        setDataFechamento(hoje.toISOString().split("T")[0]);
-        setMesFiltro(hoje.toISOString().slice(0, 7));
-
         async function verificarSessao() {
             const { data: { session } } = await supabase.auth.getSession();
+
+            // Movido para depois do 'await' para não disparar o erro do React 19
+            const hoje = new Date();
+            setDataFechamento(hoje.toISOString().split("T")[0]);
+            setMesFiltro(hoje.toISOString().slice(0, 7));
 
             if (session?.user) {
                 await carregarDadosDoBanco(
