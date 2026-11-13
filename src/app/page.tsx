@@ -9,10 +9,12 @@ import { supabase } from "@/lib/supabase";
 
 interface Fechamento {
     id: number;
+    user_id?: string;
     responsavel: string;
     aluno: string;
     escola: string;
     serie: string;
+    origem?: string;
     data: string;
 }
 
@@ -20,6 +22,16 @@ interface UsuarioPerfil {
     id: string;
     nome: string;
     email: string;
+    isAdmin: boolean;
+    whatsappRelatorio: string;
+    callmebotApiKey: string;
+    ultimoRelatorioAuto: string;
+}
+
+interface ConsultorResumo {
+    id: string;
+    nome: string;
+    meta_mensal: number;
 }
 
 const ESCOLAS_PADRAO: string[] = [
@@ -38,12 +50,63 @@ const SERIES_PADRAO: string[] = [
     "3º Ano EM",
 ];
 
-// Remove acentos para facilitar a busca por nome
+const ORIGENS_CLIENTE: string[] = [
+    "DataCrazy",
+    "Presencial",
+    "Ligação",
+];
+
 function normalizarTexto(texto: string): string {
     return texto
         .toLowerCase()
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "");
+}
+
+function limparDigitos(valor: string): string {
+    return valor.replace(/\D/g, "");
+}
+
+function formatarTelefoneExibicao(valor: string): string {
+    const digitos = limparDigitos(valor).slice(0, 13);
+    if (!digitos) return "";
+
+    const local =
+        digitos.startsWith("55") && digitos.length >= 12
+            ? digitos.slice(2)
+            : digitos;
+
+    if (local.length <= 2) return `(${local}`;
+    if (local.length <= 6) return `(${local.slice(0, 2)}) ${local.slice(2)}`;
+    if (local.length <= 10) {
+        return `(${local.slice(0, 2)}) ${local.slice(2, 6)}-${local.slice(6)}`;
+    }
+    return `(${local.slice(0, 2)}) ${local.slice(2, 7)}-${local.slice(7, 11)}`;
+}
+
+function normalizarNumeroBanco(valor: string): string {
+    const digitos = limparDigitos(valor);
+    if (!digitos) return "";
+    if (digitos.length === 10 || digitos.length === 11) {
+        return `55${digitos}`;
+    }
+    return digitos;
+}
+
+function formatarMesAno(mesIso: string): string {
+    if (!mesIso || !mesIso.includes("-")) return mesIso;
+    const [ano, mes] = mesIso.split("-");
+    return `${mes}/${ano}`;
+}
+
+function obterEstiloBadgeOrigem(origem: string): string {
+    if (origem === "Presencial") {
+        return "bg-r4-terracota/15 text-r4-terracota-escuro";
+    }
+    if (origem === "Ligação") {
+        return "bg-r4-marrom/10 text-r4-marrom";
+    }
+    return "bg-r4-petroleo/15 text-r4-petroleo-escuro";
 }
 
 export default function ControleReforcoPage() {
@@ -52,6 +115,7 @@ export default function ControleReforcoPage() {
     // BLOCO A1: ESTADOS DE LOGIN E CADASTRO
     // --------------------------------------------------------------------------
     const [usuarioLogado, setUsuarioLogado] = useState<UsuarioPerfil | null>(null);
+    const [consultores, setConsultores] = useState<ConsultorResumo[]>([]);
     const [carregando, setCarregando] = useState<boolean>(true);
     const [enviandoAuth, setEnviandoAuth] = useState<boolean>(false);
 
@@ -62,7 +126,17 @@ export default function ControleReforcoPage() {
     const [erroAuth, setErroAuth] = useState<string>("");
 
     // --------------------------------------------------------------------------
-    // BLOCO A2: ESTADOS DO SISTEMA
+    // BLOCO A2: ESTADOS DE WHATSAPP (CALLMEBOT) DO PERFIL
+    // --------------------------------------------------------------------------
+    const [editandoWhatsapp, setEditandoWhatsapp] = useState<boolean>(false);
+    const [inputWhatsapp, setInputWhatsapp] = useState<string>("");
+    const [inputApiKey, setInputApiKey] = useState<string>("");
+    const [salvandoWhatsapp, setSalvandoWhatsapp] = useState<boolean>(false);
+    const [enviandoWhatsapp, setEnviandoWhatsapp] = useState<boolean>(false);
+    const [whatsappEnviadoOk, setWhatsappEnviadoOk] = useState<boolean>(false);
+
+    // --------------------------------------------------------------------------
+    // BLOCO A3: ESTADOS DO SISTEMA
     // --------------------------------------------------------------------------
     const [escolas, setEscolas] = useState<string[]>(ESCOLAS_PADRAO);
     const [series, setSeries] = useState<string[]>(SERIES_PADRAO);
@@ -77,20 +151,21 @@ export default function ControleReforcoPage() {
     const [aluno, setAluno] = useState<string>("");
     const [escolaSelecionada, setEscolaSelecionada] = useState<string>(ESCOLAS_PADRAO[0]);
     const [serieSelecionada, setSerieSelecionada] = useState<string>(SERIES_PADRAO[0]);
+    const [origemSelecionada, setOrigemSelecionada] = useState<string>(ORIGENS_CLIENTE[0]);
 
     const [dataFechamento, setDataFechamento] = useState<string>("");
 
-    // Estado de edição (guarda o ID do registro que está sendo editado ou null)
     const [editandoId, setEditandoId] = useState<number | null>(null);
     const formRef = useRef<HTMLElement | null>(null);
 
     const [metaMensal, setMetaMensal] = useState<number>(15);
     const [mesFiltro, setMesFiltro] = useState<string>("");
 
-    // Estados de busca e filtro na listagem
     const [buscaTexto, setBuscaTexto] = useState<string>("");
     const [filtroEscola, setFiltroEscola] = useState<string>("");
     const [filtroSerie, setFiltroSerie] = useState<string>("");
+    const [filtroOrigem, setFiltroOrigem] = useState<string>("");
+    const [filtroConsultor, setFiltroConsultor] = useState<string>("");
 
     const [fechamentos, setFechamentos] = useState<Fechamento[]>([]);
     const [salvando, setSalvando] = useState<boolean>(false);
@@ -107,7 +182,7 @@ export default function ControleReforcoPage() {
             .single();
 
         if (!perfil) {
-            const { data: novoPerfil } = await supabase
+            const { data: novoPerfil, error: erroInsert } = await supabase
                 .from("perfis")
                 .insert({
                     id: userId,
@@ -115,26 +190,44 @@ export default function ControleReforcoPage() {
                     escolas: ESCOLAS_PADRAO,
                     series: SERIES_PADRAO,
                     meta_mensal: 15,
+                    whatsapp_relatorio: "",
+                    callmebot_apikey: "",
+                    ultimo_relatorio_auto: "",
                 })
                 .select()
                 .single();
 
+            if (erroInsert) {
+                setErroAuth("Erro ao criar perfil no banco: " + erroInsert.message);
+                return;
+            }
+
             perfil = novoPerfil;
         }
 
-        if (perfil) {
-            setUsuarioLogado({
-                id: userId,
-                nome: perfil.nome,
-                email: email,
-            });
-            setEscolas(perfil.escolas);
-            setSeries(perfil.series);
-            setEscolaSelecionada(perfil.escolas[0] || "");
-            setSerieSelecionada(perfil.series[0] || "");
-            setMetaMensal(perfil.meta_mensal);
+        const ehAdmin = Boolean(perfil?.is_admin);
+
+        // Se for ADM, busca também a lista de todos os perfis para identificar cada consultor
+        if (ehAdmin) {
+            const { data: todosPerfis } = await supabase
+                .from("perfis")
+                .select("id, nome, meta_mensal")
+                .order("nome", { ascending: true });
+
+            if (todosPerfis) {
+                setConsultores(todosPerfis);
+            }
+        } else if (perfil) {
+            setConsultores([
+                {
+                    id: userId,
+                    nome: perfil.nome,
+                    meta_mensal: perfil.meta_mensal,
+                },
+            ]);
         }
 
+        // Para ADM, a política RLS retorna os fechamentos de todos os consultores
         const { data: listaFechamentos } = await supabase
             .from("fechamentos")
             .select("*")
@@ -142,6 +235,28 @@ export default function ControleReforcoPage() {
 
         if (listaFechamentos) {
             setFechamentos(listaFechamentos);
+        }
+
+        if (perfil) {
+            const whatsappSalvo = perfil.whatsapp_relatorio || "";
+            const apiKeySalva = perfil.callmebot_apikey || "";
+
+            setUsuarioLogado({
+                id: userId,
+                nome: perfil.nome,
+                email: email,
+                isAdmin: ehAdmin,
+                whatsappRelatorio: whatsappSalvo,
+                callmebotApiKey: apiKeySalva,
+                ultimoRelatorioAuto: perfil.ultimo_relatorio_auto || "",
+            });
+            setInputWhatsapp(formatarTelefoneExibicao(whatsappSalvo));
+            setInputApiKey(apiKeySalva);
+            setEscolas(perfil.escolas);
+            setSeries(perfil.series);
+            setEscolaSelecionada(perfil.escolas[0] || "");
+            setSerieSelecionada(perfil.series[0] || "");
+            setMetaMensal(perfil.meta_mensal);
         }
     }
 
@@ -227,19 +342,74 @@ export default function ControleReforcoPage() {
     async function handleSair() {
         await supabase.auth.signOut();
         setUsuarioLogado(null);
+        setConsultores([]);
         setFechamentos([]);
         setEditandoId(null);
+        setFiltroConsultor("");
     }
 
     // --------------------------------------------------------------------------
-    // BLOCO D: FUNÇÕES DO SISTEMA (Salvando e editando no PostgreSQL)
+    // BLOCO D: FUNÇÕES DO PERFIL E DO SISTEMA (PostgreSQL via Supabase)
     // --------------------------------------------------------------------------
+    async function handleSalvarWhatsappPerfil(e: React.SyntheticEvent<HTMLFormElement>) {
+        e.preventDefault();
+        if (!usuarioLogado) return;
+
+        const digitos = limparDigitos(inputWhatsapp);
+        if (digitos.length > 0 && digitos.length < 10) {
+            alert("Digite um número de WhatsApp válido com DDD (ex: (71) 99999-9999).");
+            return;
+        }
+
+        const chaveLimpa = inputApiKey.trim();
+        if (digitos.length > 0 && !chaveLimpa) {
+            alert("Informe também a API Key recebida do CallMeBot.");
+            return;
+        }
+
+        setSalvandoWhatsapp(true);
+        const numeroNormalizado = normalizarNumeroBanco(inputWhatsapp);
+
+        const { error } = await supabase
+            .from("perfis")
+            .update({
+                whatsapp_relatorio: numeroNormalizado,
+                callmebot_apikey: numeroNormalizado ? chaveLimpa : "",
+            })
+            .eq("id", usuarioLogado.id);
+
+        setSalvandoWhatsapp(false);
+
+        if (error) {
+            alert(
+                "Erro ao salvar configurações. Verifique se executou o SQL na tabela 'perfis': " +
+                error.message
+            );
+            return;
+        }
+
+        setUsuarioLogado({
+            ...usuarioLogado,
+            whatsappRelatorio: numeroNormalizado,
+            callmebotApiKey: numeroNormalizado ? chaveLimpa : "",
+        });
+        setInputWhatsapp(formatarTelefoneExibicao(numeroNormalizado));
+        setInputApiKey(numeroNormalizado ? chaveLimpa : "");
+        setEditandoWhatsapp(false);
+    }
+
     async function handleSalvarMetaNoBanco() {
         if (!usuarioLogado) return;
         await supabase
             .from("perfis")
             .update({ meta_mensal: metaMensal })
             .eq("id", usuarioLogado.id);
+
+        setConsultores((lista) =>
+            lista.map((c) =>
+                c.id === usuarioLogado.id ? { ...c, meta_mensal: metaMensal } : c
+            )
+        );
     }
 
     async function handleAdicionarEscola() {
@@ -318,29 +488,28 @@ export default function ControleReforcoPage() {
             .eq("id", usuarioLogado.id);
     }
 
-    // Preenche o formulário com os dados do aluno escolhido para edição
     function handleIniciarEdicao(item: Fechamento) {
         setEditandoId(item.id);
         setResponsavel(item.responsavel);
         setAluno(item.aluno);
         setEscolaSelecionada(item.escola);
         setSerieSelecionada(item.serie);
+        setOrigemSelecionada(item.origem || ORIGENS_CLIENTE[0]);
         setDataFechamento(item.data);
 
         formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
 
-    // Sai do modo de edição e limpa o formulário
     function handleCancelarEdicao() {
         setEditandoId(null);
         setResponsavel("");
         setAluno("");
         setEscolaSelecionada(escolas[0] || "");
         setSerieSelecionada(series[0] || "");
+        setOrigemSelecionada(ORIGENS_CLIENTE[0]);
         setDataFechamento(new Date().toISOString().split("T")[0]);
     }
 
-    // Salva um novo fechamento OU atualiza o fechamento em edição
     async function handleSalvarFechamento(e: React.SyntheticEvent<HTMLFormElement>) {
         e.preventDefault();
         if (!usuarioLogado) return;
@@ -358,18 +527,23 @@ export default function ControleReforcoPage() {
         setSalvando(true);
 
         if (editandoId !== null) {
-            // MODO EDIÇÃO: UPDATE fechamentos SET ... WHERE id = editandoId
-            const { data: registroAtualizado, error } = await supabase
+            let queryUpdate = supabase
                 .from("fechamentos")
                 .update({
                     responsavel: responsavel.trim(),
                     aluno: aluno.trim(),
                     escola: escolaSelecionada,
                     serie: serieSelecionada,
+                    origem: origemSelecionada,
                     data: dataFechamento,
                 })
-                .eq("id", editandoId)
-                .eq("user_id", usuarioLogado.id)
+                .eq("id", editandoId);
+
+            if (!usuarioLogado.isAdmin) {
+                queryUpdate = queryUpdate.eq("user_id", usuarioLogado.id);
+            }
+
+            const { data: registroAtualizado, error } = await queryUpdate
                 .select()
                 .single();
 
@@ -389,7 +563,6 @@ export default function ControleReforcoPage() {
                 handleCancelarEdicao();
             }
         } else {
-            // MODO NOVO REGISTRO: INSERT INTO fechamentos ...
             const { data: registroCriado, error } = await supabase
                 .from("fechamentos")
                 .insert({
@@ -398,6 +571,7 @@ export default function ControleReforcoPage() {
                     aluno: aluno.trim(),
                     escola: escolaSelecionada,
                     serie: serieSelecionada,
+                    origem: origemSelecionada,
                     data: dataFechamento,
                 })
                 .select()
@@ -414,6 +588,7 @@ export default function ControleReforcoPage() {
                 setFechamentos([registroCriado, ...fechamentos]);
                 setResponsavel("");
                 setAluno("");
+                setOrigemSelecionada(ORIGENS_CLIENTE[0]);
             }
         }
     }
@@ -445,20 +620,47 @@ export default function ControleReforcoPage() {
     }
 
     // --------------------------------------------------------------------------
-    // BLOCO E: CÁLCULOS AUTOMÁTICOS, FILTROS E RELATÓRIO WHATSAPP
+    // BLOCO E: CÁLCULOS AUTOMÁTICOS, FILTROS E ENVIO DIRETO WHATSAPP
     // --------------------------------------------------------------------------
+    const mapaConsultores = new Map<string, ConsultorResumo>(
+        consultores.map((c) => [c.id, c])
+    );
+
+    function obterNomeConsultor(userId?: string): string {
+        if (!userId) return usuarioLogado?.nome || "Consultor";
+        return mapaConsultores.get(userId)?.nome || "Consultor";
+    }
+
     const fechamentosDoMes = fechamentos.filter((item) =>
         item.data.startsWith(mesFiltro)
     );
 
+    // Base do termômetro: se o ADM filtrou um consultor específico, mostra a meta dele; caso contrário, mostra o total da equipe
+    const fechamentosBaseMeta =
+        usuarioLogado?.isAdmin && filtroConsultor
+            ? fechamentosDoMes.filter((item) => item.user_id === filtroConsultor)
+            : fechamentosDoMes;
+
+    const metaExibida =
+        usuarioLogado?.isAdmin && !filtroConsultor
+            ? consultores.reduce((soma, c) => soma + (c.meta_mensal || 0), 0) || metaMensal
+            : usuarioLogado?.isAdmin && filtroConsultor
+                ? mapaConsultores.get(filtroConsultor)?.meta_mensal || metaMensal
+                : metaMensal;
+
     const porcentagemMeta =
-        metaMensal > 0
-            ? Math.min(Math.round((fechamentosDoMes.length / metaMensal) * 100), 100)
+        metaExibida > 0
+            ? Math.min(Math.round((fechamentosBaseMeta.length / metaExibida) * 100), 100)
             : 0;
 
-    // Aplica busca por texto e filtros de colégio/série sobre os alunos do mês
     const termoBuscaNormalizado = normalizarTexto(buscaTexto.trim());
-    const temFiltroAtivo = Boolean(termoBuscaNormalizado || filtroEscola || filtroSerie);
+    const temFiltroAtivo = Boolean(
+        termoBuscaNormalizado ||
+        filtroEscola ||
+        filtroSerie ||
+        filtroOrigem ||
+        filtroConsultor
+    );
 
     const fechamentosFiltrados = fechamentosDoMes.filter((item) => {
         const bateTexto =
@@ -468,11 +670,13 @@ export default function ControleReforcoPage() {
 
         const bateEscola = !filtroEscola || item.escola === filtroEscola;
         const bateSerie = !filtroSerie || item.serie === filtroSerie;
+        const origemAtual = item.origem || ORIGENS_CLIENTE[0];
+        const bateOrigem = !filtroOrigem || origemAtual === filtroOrigem;
+        const bateConsultor = !filtroConsultor || item.user_id === filtroConsultor;
 
-        return bateTexto && bateEscola && bateSerie;
+        return bateTexto && bateEscola && bateSerie && bateOrigem && bateConsultor;
     });
 
-    // Garante que opções antigas já cadastradas também apareçam nos filtros e na edição
     const opcoesFiltroEscolas = Array.from(
         new Set([...escolas, ...fechamentosDoMes.map((f) => f.escola)])
     );
@@ -494,6 +698,28 @@ export default function ControleReforcoPage() {
         setBuscaTexto("");
         setFiltroEscola("");
         setFiltroSerie("");
+        setFiltroOrigem("");
+        setFiltroConsultor("");
+    }
+
+    function montarTextoRelatorioAtual(): string {
+        const linhas = fechamentosFiltrados.map((item, index) => {
+            const [ano, mes, dia] = item.data.split("-");
+            const origemTexto = item.origem || ORIGENS_CLIENTE[0];
+            const infoConsultor = usuarioLogado?.isAdmin
+                ? ` | Consultor: ${obterNomeConsultor(item.user_id)}`
+                : "";
+            return `${index + 1}. Aluno: ${item.aluno} (${item.serie} - ${item.escola}) | Origem: ${origemTexto}${infoConsultor} | Resp.: ${item.responsavel} | Data: ${dia}/${mes}/${ano}`;
+        });
+
+        const cabecalhoFiltro = temFiltroAtivo ? " *(Lista Filtrada)*" : "";
+        const tituloConsultor = usuarioLogado?.isAdmin
+            ? filtroConsultor
+                ? `Consultor: ${obterNomeConsultor(filtroConsultor)}`
+                : `Visão Geral ADM (Toda a Equipe)`
+            : `Consultor: ${usuarioLogado?.nome}`;
+
+        return `*Fechamentos do Mês (${formatarMesAno(mesFiltro)}) — R4*${cabecalhoFiltro}\n${tituloConsultor}\nMeta: ${fechamentosBaseMeta.length}/${metaExibida} alunos\n\n${linhas.join("\n")}`;
     }
 
     function handleCopiarRelatorio() {
@@ -502,18 +728,57 @@ export default function ControleReforcoPage() {
             return;
         }
 
-        const linhas = fechamentosFiltrados.map((item, index) => {
-            const [ano, mes, dia] = item.data.split("-");
-            return `${index + 1}. Aluno: ${item.aluno} (${item.serie} - ${item.escola}) | Resp.: ${item.responsavel} | Data: ${dia}/${mes}/${ano}`;
-        });
-
-        const cabecalhoFiltro = temFiltroAtivo ? " *(Lista Filtrada)*" : "";
-        const textoRelatorio = `*Fechamentos do Mês (${mesFiltro})*${cabecalhoFiltro}\nConsultor: ${usuarioLogado?.nome}\nMeta: ${fechamentosDoMes.length}/${metaMensal} alunos\n\n${linhas.join("\n")}`;
-
-        navigator.clipboard.writeText(textoRelatorio);
+        navigator.clipboard.writeText(montarTextoRelatorioAtual());
         setCopiado(true);
         setTimeout(() => setCopiado(false), 2500);
     }
+
+    async function handleEnviarRelatorioWhatsAppDireto() {
+        if (!usuarioLogado) return;
+
+        if (!usuarioLogado.whatsappRelatorio || !usuarioLogado.callmebotApiKey) {
+            alert("Configure primeiro seu número de WhatsApp e a API Key do CallMeBot no perfil acima.");
+            setEditandoWhatsapp(true);
+            return;
+        }
+
+        if (fechamentosFiltrados.length === 0) {
+            alert("Não há alunos listados neste mês/filtro para enviar.");
+            return;
+        }
+
+        setEnviandoWhatsapp(true);
+
+        try {
+            const resposta = await fetch("/api/whatsapp/enviar", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    telefone: usuarioLogado.whatsappRelatorio,
+                    apiKey: usuarioLogado.callmebotApiKey,
+                    mensagem: montarTextoRelatorioAtual(),
+                }),
+            });
+
+            const dados = await resposta.json();
+            setEnviandoWhatsapp(false);
+
+            if (!resposta.ok) {
+                alert(dados.erro || "Não foi possível enviar a mensagem no WhatsApp.");
+                return;
+            }
+
+            setWhatsappEnviadoOk(true);
+            setTimeout(() => setWhatsappEnviadoOk(false), 3000);
+        } catch {
+            setEnviandoWhatsapp(false);
+            alert("Erro de conexão ao tentar enviar pelo WhatsApp.");
+        }
+    }
+
+    const whatsappConfigurado = Boolean(
+        usuarioLogado?.whatsappRelatorio && usuarioLogado?.callmebotApiKey
+    );
 
     // ============================================================================
     // 📋 PARTE 2: INTERFACE VISUAL (Identidade Visual R4)
@@ -652,30 +917,136 @@ export default function ControleReforcoPage() {
 
     return (
         <main className="min-h-screen bg-background p-4 md:p-8 text-slate-800">
-            <div className="max-w-4xl mx-auto space-y-6">
+            <div className="max-w-5xl mx-auto space-y-6">
 
-                {/* BARRA SUPERIOR DO PERFIL LOGADO */}
-                <div className="flex items-center justify-between bg-r4-marrom text-white px-5 py-3 rounded-xl text-sm shadow-xs">
-                    <div className="flex items-center gap-3">
-                        <img
-                            src="/logo-r4.png"
-                            alt="Logo R4"
-                            className="w-8 h-8 rounded-full bg-white p-0.5 object-contain shrink-0"
-                        />
-                        <div>
-                            Perfil ativo: <strong>{usuarioLogado.nome}</strong>{" "}
-                            <span className="text-stone-300 hidden sm:inline">
-                                ({usuarioLogado.email})
-                            </span>
+                {/* BARRA SUPERIOR DO PERFIL LOGADO + WHATSAPP AUTOMÁTICO */}
+                <div className="bg-r4-marrom text-white px-5 py-3 rounded-xl text-sm shadow-xs space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                            <img
+                                src="/logo-r4.png"
+                                alt="Logo R4"
+                                className="w-8 h-8 rounded-full bg-white p-0.5 object-contain shrink-0"
+                            />
+                            <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span>
+                                        Perfil ativo: <strong>{usuarioLogado.nome}</strong>{" "}
+                                        <span className="text-stone-300 hidden md:inline">
+                                            ({usuarioLogado.email})
+                                        </span>
+                                    </span>
+
+                                    {usuarioLogado.isAdmin && (
+                                        <span className="bg-r4-terracota text-white text-[11px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md">
+                                            ADM • Visão Geral
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div className="text-xs text-stone-300 mt-0.5">
+                                    Envio automático (dia 1 às 08h):{" "}
+                                    {whatsappConfigurado ? (
+                                        <span className="text-emerald-300 font-medium">
+                                            Ativo para{" "}
+                                            {formatarTelefoneExibicao(
+                                                usuarioLogado.whatsappRelatorio
+                                            )}
+                                        </span>
+                                    ) : (
+                                        <span className="text-amber-300">Não configurado</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                            <button
+                                type="button"
+                                onClick={() => setEditandoWhatsapp(!editandoWhatsapp)}
+                                className="bg-r4-petroleo hover:bg-r4-petroleo-escuro text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                            >
+                                {editandoWhatsapp
+                                    ? "Fechar Config."
+                                    : whatsappConfigurado
+                                        ? "Alterar WhatsApp"
+                                        : "Configurar WhatsApp"}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleSair}
+                                className="bg-white/10 hover:bg-r4-vermelho text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                            >
+                                Sair / Trocar Conta
+                            </button>
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={handleSair}
-                        className="bg-white/10 hover:bg-r4-vermelho text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
-                    >
-                        Sair / Trocar Conta
-                    </button>
+
+                    {/* CONFIGURAÇÃO CALLMEBOT POR PERFIL */}
+                    {editandoWhatsapp && (
+                        <form
+                            onSubmit={handleSalvarWhatsappPerfil}
+                            className="pt-3 border-t border-white/15 space-y-3"
+                        >
+                            <p className="text-xs text-stone-200 leading-relaxed">
+                                Para ativar o envio automático gratuito: adicione o contato do{" "}
+                                <a
+                                    href="https://www.callmebot.com/blog/free-api-whatsapp-messages/"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="underline text-emerald-300 font-medium"
+                                >
+                                    CallMeBot
+                                </a>{" "}
+                                no WhatsApp, envie{" "}
+                                <code className="bg-black/30 px-1.5 py-0.5 rounded">
+                                    I allow callmebot to send me messages
+                                </code>{" "}
+                                e cole abaixo o seu número e a <strong>API Key</strong> recebida:
+                            </p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                                <div>
+                                    <label className="block text-xs font-medium text-stone-200 mb-1">
+                                        WhatsApp com DDD
+                                    </label>
+                                    <input
+                                        type="tel"
+                                        placeholder="Ex: (71) 99999-9999"
+                                        value={inputWhatsapp}
+                                        onChange={(e) =>
+                                            setInputWhatsapp(
+                                                formatarTelefoneExibicao(e.target.value)
+                                            )
+                                        }
+                                        className="w-full bg-white text-slate-900 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-xs font-medium text-stone-200 mb-1">
+                                        API Key do CallMeBot
+                                    </label>
+                                    <input
+                                        type="text"
+                                        placeholder="Ex: 123456"
+                                        value={inputApiKey}
+                                        onChange={(e) => setInputApiKey(e.target.value)}
+                                        className="w-full bg-white text-slate-900 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                    />
+                                </div>
+
+                                <button
+                                    type="submit"
+                                    disabled={salvandoWhatsapp}
+                                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer h-[34px]"
+                                >
+                                    {salvandoWhatsapp ? "Salvando..." : "Salvar Automação"}
+                                </button>
+                            </div>
+                        </form>
+                    )}
                 </div>
 
                 {/* CABEÇALHO E TERMÔMETRO DA META */}
@@ -692,7 +1063,9 @@ export default function ControleReforcoPage() {
                                     Controle de Matrículas — R4
                                 </h1>
                                 <p className="text-sm text-slate-500">
-                                    Registro rápido de atendimentos fechados
+                                    {usuarioLogado.isAdmin
+                                        ? "Painel administrativo com fechamentos de toda a equipe"
+                                        : "Registro rápido de atendimentos fechados"}
                                 </p>
                             </div>
                         </div>
@@ -712,7 +1085,7 @@ export default function ControleReforcoPage() {
 
                             <div>
                                 <label className="block text-xs font-medium text-slate-500">
-                                    Meta (Alunos)
+                                    Sua Meta (Alunos)
                                 </label>
                                 <input
                                     type="number"
@@ -720,7 +1093,7 @@ export default function ControleReforcoPage() {
                                     value={metaMensal}
                                     onChange={(e) => setMetaMensal(Number(e.target.value))}
                                     onBlur={handleSalvarMetaNoBanco}
-                                    className="w-20 border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                    className="w-24 border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 />
                             </div>
                         </div>
@@ -729,7 +1102,9 @@ export default function ControleReforcoPage() {
                     <div className="mt-5">
                         <div className="flex justify-between text-sm font-medium mb-1">
                             <span>
-                                Progresso: {fechamentosDoMes.length} de {metaMensal} alunos fechados
+                                {usuarioLogado.isAdmin && !filtroConsultor
+                                    ? `Progresso da Equipe: ${fechamentosBaseMeta.length} de ${metaExibida} alunos fechados`
+                                    : `Progresso: ${fechamentosBaseMeta.length} de ${metaExibida} alunos fechados`}
                             </span>
                             <span className="text-r4-petroleo font-bold">{porcentagemMeta}%</span>
                         </div>
@@ -917,6 +1292,24 @@ export default function ControleReforcoPage() {
                             )}
                         </div>
 
+                        {/* Origem do Cliente */}
+                        <div>
+                            <label className="block text-sm font-medium mb-1">
+                                Origem do Cliente
+                            </label>
+                            <select
+                                value={origemSelecionada}
+                                onChange={(e) => setOrigemSelecionada(e.target.value)}
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                            >
+                                {ORIGENS_CLIENTE.map((orig) => (
+                                    <option key={orig} value={orig}>
+                                        {orig}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
                         {/* Data do Fechamento */}
                         <div>
                             <label className="block text-sm font-medium mb-1">
@@ -932,7 +1325,7 @@ export default function ControleReforcoPage() {
                         </div>
 
                         {/* Botão Principal de Envio / Atualização */}
-                        <div className="flex items-end gap-2">
+                        <div className="md:col-span-2 flex items-center gap-2 pt-1">
                             <button
                                 type="submit"
                                 disabled={salvando}
@@ -977,27 +1370,46 @@ export default function ControleReforcoPage() {
                             )}
                         </div>
 
-                        <button
-                            type="button"
-                            onClick={handleCopiarRelatorio}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors cursor-pointer ${
-                                copiado
-                                    ? "bg-emerald-600"
-                                    : "bg-r4-petroleo hover:bg-r4-petroleo-escuro"
-                            }`}
-                        >
-                            {copiado
-                                ? "Relatório Copiado!"
-                                : temFiltroAtivo
-                                    ? "Copiar Lista Filtrada"
-                                    : "Copiar Relatório do Mês"}
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={handleCopiarRelatorio}
+                                className={`px-3.5 py-2 rounded-lg text-sm font-medium text-white transition-colors cursor-pointer ${
+                                    copiado
+                                        ? "bg-emerald-600"
+                                        : "bg-r4-petroleo hover:bg-r4-petroleo-escuro"
+                                }`}
+                            >
+                                {copiado
+                                    ? "Relatório Copiado!"
+                                    : temFiltroAtivo
+                                        ? "Copiar Filtrados"
+                                        : "Copiar Relatório"}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleEnviarRelatorioWhatsAppDireto}
+                                disabled={enviandoWhatsapp}
+                                className="px-3.5 py-2 rounded-lg text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 transition-colors cursor-pointer"
+                            >
+                                {enviandoWhatsapp
+                                    ? "Enviando..."
+                                    : whatsappEnviadoOk
+                                        ? "Enviado no WhatsApp!"
+                                        : "Enviar no WhatsApp"}
+                            </button>
+                        </div>
                     </div>
 
                     {/* BARRA DE BUSCA E FILTROS */}
                     {fechamentosDoMes.length > 0 && (
                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 mb-4 space-y-2">
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                            <div
+                                className={`grid grid-cols-1 sm:grid-cols-2 ${
+                                    usuarioLogado.isAdmin ? "lg:grid-cols-5" : "lg:grid-cols-4"
+                                } gap-2.5`}
+                            >
                                 <input
                                     type="text"
                                     placeholder="Buscar aluno ou responsável..."
@@ -1005,6 +1417,21 @@ export default function ControleReforcoPage() {
                                     onChange={(e) => setBuscaTexto(e.target.value)}
                                     className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 />
+
+                                {usuarioLogado.isAdmin && (
+                                    <select
+                                        value={filtroConsultor}
+                                        onChange={(e) => setFiltroConsultor(e.target.value)}
+                                        className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                    >
+                                        <option value="">Todos os consultores</option>
+                                        {consultores.map((c) => (
+                                            <option key={c.id} value={c.id}>
+                                                {c.nome}
+                                            </option>
+                                        ))}
+                                    </select>
+                                )}
 
                                 <select
                                     value={filtroEscola}
@@ -1028,6 +1455,19 @@ export default function ControleReforcoPage() {
                                     {opcoesFiltroSeries.map((ser) => (
                                         <option key={ser} value={ser}>
                                             {ser}
+                                        </option>
+                                    ))}
+                                </select>
+
+                                <select
+                                    value={filtroOrigem}
+                                    onChange={(e) => setFiltroOrigem(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                >
+                                    <option value="">Todas as origens</option>
+                                    {ORIGENS_CLIENTE.map((orig) => (
+                                        <option key={orig} value={orig}>
+                                            {orig}
                                         </option>
                                     ))}
                                 </select>
@@ -1072,6 +1512,10 @@ export default function ControleReforcoPage() {
                                     <th className="py-2.5 pr-4 font-medium">Aluno</th>
                                     <th className="py-2.5 px-4 font-medium">Responsável</th>
                                     <th className="py-2.5 px-4 font-medium">Série / Colégio</th>
+                                    <th className="py-2.5 px-4 font-medium">Origem</th>
+                                    {usuarioLogado.isAdmin && (
+                                        <th className="py-2.5 px-4 font-medium">Consultor</th>
+                                    )}
                                     <th className="py-2.5 px-4 font-medium">Data</th>
                                     <th className="py-2.5 pl-4 font-medium text-right">Ações</th>
                                 </tr>
@@ -1080,6 +1524,7 @@ export default function ControleReforcoPage() {
                                 {fechamentosFiltrados.map((item) => {
                                     const [ano, mes, dia] = item.data.split("-");
                                     const estaEmEdicao = editandoId === item.id;
+                                    const origemExibida = item.origem || ORIGENS_CLIENTE[0];
 
                                     return (
                                         <tr
@@ -1102,6 +1547,20 @@ export default function ControleReforcoPage() {
                                                     </span>
                                                 <span className="text-slate-600">{item.escola}</span>
                                             </td>
+                                            <td className="py-3 px-4">
+                                                    <span
+                                                        className={`inline-block font-medium px-2.5 py-0.5 rounded-full text-xs ${obterEstiloBadgeOrigem(
+                                                            origemExibida
+                                                        )}`}
+                                                    >
+                                                        {origemExibida}
+                                                    </span>
+                                            </td>
+                                            {usuarioLogado.isAdmin && (
+                                                <td className="py-3 px-4 font-medium text-r4-marrom">
+                                                    {obterNomeConsultor(item.user_id)}
+                                                </td>
+                                            )}
                                             <td className="py-3 px-4 text-slate-600">
                                                 {`${dia}/${mes}/${ano}`}
                                             </td>
