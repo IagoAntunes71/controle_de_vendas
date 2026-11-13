@@ -1,34 +1,27 @@
 // ============================================================================
-// ✍️ PARTE 1: DIGITE ESTA PARTE NA MÃO (Conexão com Banco e Login Real)
+// ✍️ PARTE 1: CONEXÃO COM BANCO E LOGIN REAL
 // ============================================================================
 
-//Avisando que este sistema irá rodar no navegador//
 "use client";
 
-//Serve para guardar as infos que mudam na tela (useState) e rodar ações automáticas (useEffect)//
-import React, { useState, useEffect } from "react";
-
-// Importamos a ponte de conexão que você acabou de criar em src/lib/supabase.ts
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 
-//Se você tentar salvar um texto no campo 'id' (que é number), o IntelliJ avisa o erro na hora.//
 interface Fechamento {
     id: number;
     responsavel: string;
     aluno: string;
     escola: string;
     serie: string;
-    data: string; // Vai guardar textos no formato "AAAA-MM-DD"
+    data: string;
 }
 
-// MOLDE DO USUÁRIO LOGADO (Agora o 'id' vem do Supabase no formato UUID, que é uma string)
 interface UsuarioPerfil {
     id: string;
     nome: string;
     email: string;
 }
 
-// Listas iniciais padrão para toda conta nova que for criada
 const ESCOLAS_PADRAO: string[] = [
     "Colégio São Paulo",
     "Colégio Sartre",
@@ -45,7 +38,14 @@ const SERIES_PADRAO: string[] = [
     "3º Ano EM",
 ];
 
-// 👇 LEMBRETE: Esta linha abre a "caixa" principal da página. Tudo fica dentro dela!
+// Remove acentos para facilitar a busca por nome
+function normalizarTexto(texto: string): string {
+    return texto
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+}
+
 export default function ControleReforcoPage() {
 
     // --------------------------------------------------------------------------
@@ -62,32 +62,35 @@ export default function ControleReforcoPage() {
     const [erroAuth, setErroAuth] = useState<string>("");
 
     // --------------------------------------------------------------------------
-    // BLOCO A2: ESTADOS DO SISTEMA (Com suas anotações originais)
+    // BLOCO A2: ESTADOS DO SISTEMA
     // --------------------------------------------------------------------------
-
-    // <string[]> avisa ao TypeScript que este estado guarda uma LISTA(array) de textos.
     const [escolas, setEscolas] = useState<string[]>(ESCOLAS_PADRAO);
     const [series, setSeries] = useState<string[]>(SERIES_PADRAO);
 
-    //Serve para abrir ou esconder a caixinha de "+ Novo Colégio" e "+ Nova Série".
     const [mostrandoNovaEscola, setMostrandoNovaEscola] = useState<boolean>(false);
     const [textoNovaEscola, setTextoNovaEscola] = useState<string>("");
 
     const [mostrandoNovaSerie, setMostrandoNovaSerie] = useState<boolean>(false);
     const [textoNovaSerie, setTextoNovaSerie] = useState<string>("");
 
-    //Processo que guarda o que voce esta digitando nos campos do formulario:
     const [responsavel, setResponsavel] = useState<string>("");
     const [aluno, setAluno] = useState<string>("");
     const [escolaSelecionada, setEscolaSelecionada] = useState<string>(ESCOLAS_PADRAO[0]);
     const [serieSelecionada, setSerieSelecionada] = useState<string>(SERIES_PADRAO[0]);
 
-    //Passa uma função () => ... dentro do useState para calcular a data de hoje
     const [dataFechamento, setDataFechamento] = useState<string>("");
 
-   // Estado da meta e da lista principal de alunos fechados:
+    // Estado de edição (guarda o ID do registro que está sendo editado ou null)
+    const [editandoId, setEditandoId] = useState<number | null>(null);
+    const formRef = useRef<HTMLElement | null>(null);
+
     const [metaMensal, setMetaMensal] = useState<number>(15);
     const [mesFiltro, setMesFiltro] = useState<string>("");
+
+    // Estados de busca e filtro na listagem
+    const [buscaTexto, setBuscaTexto] = useState<string>("");
+    const [filtroEscola, setFiltroEscola] = useState<string>("");
+    const [filtroSerie, setFiltroSerie] = useState<string>("");
 
     const [fechamentos, setFechamentos] = useState<Fechamento[]>([]);
     const [salvando, setSalvando] = useState<boolean>(false);
@@ -96,17 +99,13 @@ export default function ControleReforcoPage() {
     // --------------------------------------------------------------------------
     // BLOCO B: BUSCAR DADOS DO USUÁRIO NO BANCO (PostgreSQL via Supabase)
     // --------------------------------------------------------------------------
-
-    // 'async' indica que esta função faz consultas pela internet e usa 'await'
     async function carregarDadosDoBanco(userId: string, email: string, nomeInicial?: string) {
-        // 1. Busca a linha deste usuário na tabela 'perfis' (equivale a: SELECT * FROM perfis WHERE id = userId)
         let { data: perfil } = await supabase
             .from("perfis")
             .select("*")
             .eq("id", userId)
             .single();
 
-        // 2. Se for o primeiro acesso da conta e ainda não existir linha na tabela 'perfis', cria agora:
         if (!perfil) {
             const { data: novoPerfil } = await supabase
                 .from("perfis")
@@ -123,7 +122,6 @@ export default function ControleReforcoPage() {
             perfil = novoPerfil;
         }
 
-        // Preenche os estados da tela com o que veio do banco
         if (perfil) {
             setUsuarioLogado({
                 id: userId,
@@ -137,8 +135,6 @@ export default function ControleReforcoPage() {
             setMetaMensal(perfil.meta_mensal);
         }
 
-        // 3. Busca todos os alunos fechados deste usuário ordenados do mais recente para o mais antigo
-        // (A regra RLS que criamos no SQL garante que só vêm os alunos DESTE usuário!)
         const { data: listaFechamentos } = await supabase
             .from("fechamentos")
             .select("*")
@@ -149,12 +145,10 @@ export default function ControleReforcoPage() {
         }
     }
 
-    // useEffect: Roda UMA VEZ quando a página abre para checar se você já está logado no Supabase
     useEffect(() => {
         async function verificarSessao() {
             const { data: { session } } = await supabase.auth.getSession();
 
-            // Movido para depois do 'await' para não disparar o erro do React 19
             const hoje = new Date();
             setDataFechamento(hoje.toISOString().split("T")[0]);
             setMesFiltro(hoje.toISOString().slice(0, 7));
@@ -176,7 +170,6 @@ export default function ControleReforcoPage() {
     // --------------------------------------------------------------------------
     // BLOCO C: FUNÇÕES DE LOGIN, CADASTRO E SAÍDA NA NUVEM
     // --------------------------------------------------------------------------
-
     async function handleAutenticar(e: React.SyntheticEvent<HTMLFormElement>) {
         e.preventDefault();
         setErroAuth("");
@@ -191,7 +184,6 @@ export default function ControleReforcoPage() {
                 return;
             }
 
-            // Cria a conta oficial no sistema de autenticação do Supabase
             const { data, error } = await supabase.auth.signUp({
                 email: emailLimpo,
                 password: senhaAuth,
@@ -210,7 +202,6 @@ export default function ControleReforcoPage() {
                 await carregarDadosDoBanco(data.user.id, emailLimpo, nomeAuth.trim());
             }
         } else {
-            // Faz login com e-mail e senha no Supabase
             const { data, error } = await supabase.auth.signInWithPassword({
                 email: emailLimpo,
                 password: senhaAuth,
@@ -237,13 +228,12 @@ export default function ControleReforcoPage() {
         await supabase.auth.signOut();
         setUsuarioLogado(null);
         setFechamentos([]);
+        setEditandoId(null);
     }
 
     // --------------------------------------------------------------------------
-    // BLOCO D: FUNÇÕES DO SISTEMA (Salvando cada alteração direto no PostgreSQL)
+    // BLOCO D: FUNÇÕES DO SISTEMA (Salvando e editando no PostgreSQL)
     // --------------------------------------------------------------------------
-
-    // Atualiza a meta no banco quando você termina de digitar o número e sai do campo (onBlur)
     async function handleSalvarMetaNoBanco() {
         if (!usuarioLogado) return;
         await supabase
@@ -252,7 +242,6 @@ export default function ControleReforcoPage() {
             .eq("id", usuarioLogado.id);
     }
 
-    // FUNÇÃO 1: Adicionar um colégio novo e salvar a lista atualizada no Supabase
     async function handleAdicionarEscola() {
         const nomeLimpo = textoNovaEscola.trim();
         if (!nomeLimpo || !usuarioLogado) return;
@@ -262,7 +251,6 @@ export default function ControleReforcoPage() {
             novaLista = [...escolas, nomeLimpo];
             setEscolas(novaLista);
 
-            // UPDATE perfis SET escolas = novaLista WHERE id = usuarioLogado.id
             await supabase
                 .from("perfis")
                 .update({ escolas: novaLista })
@@ -274,7 +262,6 @@ export default function ControleReforcoPage() {
         setMostrandoNovaEscola(false);
     }
 
-    // FUNÇÃO 1.1: Apagar o colégio selecionado e atualizar no Supabase
     async function handleRemoverEscola() {
         if (!escolaSelecionada || !usuarioLogado) return;
 
@@ -293,7 +280,6 @@ export default function ControleReforcoPage() {
             .eq("id", usuarioLogado.id);
     }
 
-    // FUNÇÃO 2: Adicionar uma série nova e salvar no Supabase
     async function handleAdicionarSerie() {
         const nomeLimpo = textoNovaSerie.trim();
         if (!nomeLimpo || !usuarioLogado) return;
@@ -314,7 +300,6 @@ export default function ControleReforcoPage() {
         setMostrandoNovaSerie(false);
     }
 
-    // FUNÇÃO 2.1: Apagar a série selecionada e atualizar no Supabase
     async function handleRemoverSerie() {
         if (!serieSelecionada || !usuarioLogado) return;
 
@@ -333,7 +318,29 @@ export default function ControleReforcoPage() {
             .eq("id", usuarioLogado.id);
     }
 
-    // FUNÇÃO 3: Inserir um novo aluno fechado na tabela 'fechamentos' do banco
+    // Preenche o formulário com os dados do aluno escolhido para edição
+    function handleIniciarEdicao(item: Fechamento) {
+        setEditandoId(item.id);
+        setResponsavel(item.responsavel);
+        setAluno(item.aluno);
+        setEscolaSelecionada(item.escola);
+        setSerieSelecionada(item.serie);
+        setDataFechamento(item.data);
+
+        formRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    // Sai do modo de edição e limpa o formulário
+    function handleCancelarEdicao() {
+        setEditandoId(null);
+        setResponsavel("");
+        setAluno("");
+        setEscolaSelecionada(escolas[0] || "");
+        setSerieSelecionada(series[0] || "");
+        setDataFechamento(new Date().toISOString().split("T")[0]);
+    }
+
+    // Salva um novo fechamento OU atualiza o fechamento em edição
     async function handleSalvarFechamento(e: React.SyntheticEvent<HTMLFormElement>) {
         e.preventDefault();
         if (!usuarioLogado) return;
@@ -350,54 +357,95 @@ export default function ControleReforcoPage() {
 
         setSalvando(true);
 
-        // INSERT INTO fechamentos (...) VALUES (...) RETURNING *
-        const { data: registroCriado, error } = await supabase
-            .from("fechamentos")
-            .insert({
-                user_id: usuarioLogado.id,
-                responsavel: responsavel.trim(),
-                aluno: aluno.trim(),
-                escola: escolaSelecionada,
-                serie: serieSelecionada,
-                data: dataFechamento,
-            })
-            .select()
-            .single();
+        if (editandoId !== null) {
+            // MODO EDIÇÃO: UPDATE fechamentos SET ... WHERE id = editandoId
+            const { data: registroAtualizado, error } = await supabase
+                .from("fechamentos")
+                .update({
+                    responsavel: responsavel.trim(),
+                    aluno: aluno.trim(),
+                    escola: escolaSelecionada,
+                    serie: serieSelecionada,
+                    data: dataFechamento,
+                })
+                .eq("id", editandoId)
+                .eq("user_id", usuarioLogado.id)
+                .select()
+                .single();
 
-        setSalvando(false);
+            setSalvando(false);
 
-        if (error) {
-            alert("Erro ao salvar no banco: " + error.message);
-            return;
-        }
+            if (error) {
+                alert("Erro ao atualizar no banco: " + error.message);
+                return;
+            }
 
-        // Adiciona na tela o registro já com o ID oficial gerado pelo PostgreSQL
-        if (registroCriado) {
-            setFechamentos([registroCriado, ...fechamentos]);
-            setResponsavel("");
-            setAluno("");
+            if (registroAtualizado) {
+                setFechamentos((listaAtual) =>
+                    listaAtual.map((item) =>
+                        item.id === editandoId ? registroAtualizado : item
+                    )
+                );
+                handleCancelarEdicao();
+            }
+        } else {
+            // MODO NOVO REGISTRO: INSERT INTO fechamentos ...
+            const { data: registroCriado, error } = await supabase
+                .from("fechamentos")
+                .insert({
+                    user_id: usuarioLogado.id,
+                    responsavel: responsavel.trim(),
+                    aluno: aluno.trim(),
+                    escola: escolaSelecionada,
+                    serie: serieSelecionada,
+                    data: dataFechamento,
+                })
+                .select()
+                .single();
+
+            setSalvando(false);
+
+            if (error) {
+                alert("Erro ao salvar no banco: " + error.message);
+                return;
+            }
+
+            if (registroCriado) {
+                setFechamentos([registroCriado, ...fechamentos]);
+                setResponsavel("");
+                setAluno("");
+            }
         }
     }
 
-    // FUNÇÃO 4: Excluir um registro do banco de dados
-    async function handleRemoverFechamento(idParaRemover: number) {
-        // DELETE FROM fechamentos WHERE id = idParaRemover
+    async function handleRemoverFechamento(itemParaRemover: Fechamento) {
+        const confirmou = window.confirm(
+            `Deseja excluir o fechamento de "${itemParaRemover.aluno}"?`
+        );
+        if (!confirmou) return;
+
         const { error } = await supabase
             .from("fechamentos")
             .delete()
-            .eq("id", idParaRemover);
+            .eq("id", itemParaRemover.id);
 
         if (error) {
             alert("Erro ao excluir: " + error.message);
             return;
         }
 
-        const listaAtualizada = fechamentos.filter((item) => item.id !== idParaRemover);
+        if (editandoId === itemParaRemover.id) {
+            handleCancelarEdicao();
+        }
+
+        const listaAtualizada = fechamentos.filter(
+            (item) => item.id !== itemParaRemover.id
+        );
         setFechamentos(listaAtualizada);
     }
 
     // --------------------------------------------------------------------------
-    // BLOCO E: CÁLCULOS AUTOMÁTICOS E RELATÓRIO WHATSAPP
+    // BLOCO E: CÁLCULOS AUTOMÁTICOS, FILTROS E RELATÓRIO WHATSAPP
     // --------------------------------------------------------------------------
     const fechamentosDoMes = fechamentos.filter((item) =>
         item.data.startsWith(mesFiltro)
@@ -408,43 +456,93 @@ export default function ControleReforcoPage() {
             ? Math.min(Math.round((fechamentosDoMes.length / metaMensal) * 100), 100)
             : 0;
 
+    // Aplica busca por texto e filtros de colégio/série sobre os alunos do mês
+    const termoBuscaNormalizado = normalizarTexto(buscaTexto.trim());
+    const temFiltroAtivo = Boolean(termoBuscaNormalizado || filtroEscola || filtroSerie);
+
+    const fechamentosFiltrados = fechamentosDoMes.filter((item) => {
+        const bateTexto =
+            !termoBuscaNormalizado ||
+            normalizarTexto(item.aluno).includes(termoBuscaNormalizado) ||
+            normalizarTexto(item.responsavel).includes(termoBuscaNormalizado);
+
+        const bateEscola = !filtroEscola || item.escola === filtroEscola;
+        const bateSerie = !filtroSerie || item.serie === filtroSerie;
+
+        return bateTexto && bateEscola && bateSerie;
+    });
+
+    // Garante que opções antigas já cadastradas também apareçam nos filtros e na edição
+    const opcoesFiltroEscolas = Array.from(
+        new Set([...escolas, ...fechamentosDoMes.map((f) => f.escola)])
+    );
+    const opcoesFiltroSeries = Array.from(
+        new Set([...series, ...fechamentosDoMes.map((f) => f.serie)])
+    );
+
+    const opcoesSelectEscolas =
+        escolaSelecionada && !escolas.includes(escolaSelecionada)
+            ? [escolaSelecionada, ...escolas]
+            : escolas;
+
+    const opcoesSelectSeries =
+        serieSelecionada && !series.includes(serieSelecionada)
+            ? [serieSelecionada, ...series]
+            : series;
+
+    function handleLimparFiltros() {
+        setBuscaTexto("");
+        setFiltroEscola("");
+        setFiltroSerie("");
+    }
+
     function handleCopiarRelatorio() {
-        if (fechamentosDoMes.length === 0) {
-            alert("Não há alunos fechados neste mês para gerar relatório.");
+        if (fechamentosFiltrados.length === 0) {
+            alert("Não há alunos listados para gerar relatório.");
             return;
         }
 
-        const linhas = fechamentosDoMes.map((item, index) => {
+        const linhas = fechamentosFiltrados.map((item, index) => {
             const [ano, mes, dia] = item.data.split("-");
             return `${index + 1}. Aluno: ${item.aluno} (${item.serie} - ${item.escola}) | Resp.: ${item.responsavel} | Data: ${dia}/${mes}/${ano}`;
         });
 
-        const textoRelatorio = `*Fechamentos do Mês (${mesFiltro})*\nConsultor: ${usuarioLogado?.nome}\nMeta: ${fechamentosDoMes.length}/${metaMensal} alunos\n\n${linhas.join("\n")}`;
+        const cabecalhoFiltro = temFiltroAtivo ? " *(Lista Filtrada)*" : "";
+        const textoRelatorio = `*Fechamentos do Mês (${mesFiltro})*${cabecalhoFiltro}\nConsultor: ${usuarioLogado?.nome}\nMeta: ${fechamentosDoMes.length}/${metaMensal} alunos\n\n${linhas.join("\n")}`;
 
         navigator.clipboard.writeText(textoRelatorio);
         setCopiado(true);
         setTimeout(() => setCopiado(false), 2500);
     }
 
-
-// ============================================================================
-// 📋 PARTE 2: PODE COPIAR E COLAR ESTA PARTE (Interface Visual / HTML + Tailwind)
-// ============================================================================
+    // ============================================================================
+    // 📋 PARTE 2: INTERFACE VISUAL (Identidade Visual R4)
+    // ============================================================================
 
     if (carregando) {
         return (
-            <main className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">
-                Conectando ao banco de dados...
+            <main className="min-h-screen bg-background flex flex-col items-center justify-center gap-3 text-slate-700">
+                <img
+                    src="/logo-r4.png"
+                    alt="Logo R4"
+                    className="w-16 h-16 rounded-full object-contain bg-white p-1 shadow-xs animate-pulse"
+                />
+                <span>Conectando ao banco de dados...</span>
             </main>
         );
     }
 
     if (!usuarioLogado) {
         return (
-            <main className="min-h-screen bg-slate-100 flex items-center justify-center p-4 text-slate-800">
+            <main className="min-h-screen bg-background flex items-center justify-center p-4 text-slate-800">
                 <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
                     <div className="text-center mb-6">
-                        <h1 className="text-2xl font-bold text-slate-900">
+                        <img
+                            src="/logo-r4.png"
+                            alt="Logo R4"
+                            className="w-20 h-20 mx-auto mb-3 rounded-full object-contain bg-white p-1 shadow-xs border border-slate-100"
+                        />
+                        <h1 className="text-2xl font-bold text-r4-marrom">
                             Controle de Matrículas
                         </h1>
                         <p className="text-sm text-slate-500 mt-1">
@@ -463,7 +561,7 @@ export default function ControleReforcoPage() {
                             }}
                             className={`py-2 text-sm font-medium rounded-md transition-colors cursor-pointer ${
                                 !modoCadastro
-                                    ? "bg-white text-slate-900 shadow-xs"
+                                    ? "bg-white text-r4-marrom shadow-xs"
                                     : "text-slate-500 hover:text-slate-700"
                             }`}
                         >
@@ -477,7 +575,7 @@ export default function ControleReforcoPage() {
                             }}
                             className={`py-2 text-sm font-medium rounded-md transition-colors cursor-pointer ${
                                 modoCadastro
-                                    ? "bg-white text-slate-900 shadow-xs"
+                                    ? "bg-white text-r4-marrom shadow-xs"
                                     : "text-slate-500 hover:text-slate-700"
                             }`}
                         >
@@ -496,7 +594,7 @@ export default function ControleReforcoPage() {
                                     placeholder="Ex: Iago"
                                     value={nomeAuth}
                                     onChange={(e) => setNomeAuth(e.target.value)}
-                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                     required
                                 />
                             </div>
@@ -509,7 +607,7 @@ export default function ControleReforcoPage() {
                                 placeholder="seuemail@exemplo.com"
                                 value={emailAuth}
                                 onChange={(e) => setEmailAuth(e.target.value)}
-                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 required
                             />
                         </div>
@@ -524,13 +622,13 @@ export default function ControleReforcoPage() {
                                 placeholder="••••••••"
                                 value={senhaAuth}
                                 onChange={(e) => setSenhaAuth(e.target.value)}
-                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 required
                             />
                         </div>
 
                         {erroAuth && (
-                            <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                            <p className="text-sm text-r4-vermelho bg-red-50 border border-red-200 rounded-lg px-3 py-2">
                                 {erroAuth}
                             </p>
                         )}
@@ -538,7 +636,7 @@ export default function ControleReforcoPage() {
                         <button
                             type="submit"
                             disabled={enviandoAuth}
-                            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors cursor-pointer"
+                            className="w-full bg-r4-terracota hover:bg-r4-terracota-escuro disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors cursor-pointer"
                         >
                             {enviandoAuth
                                 ? "Aguarde..."
@@ -553,21 +651,28 @@ export default function ControleReforcoPage() {
     }
 
     return (
-        <main className="min-h-screen bg-slate-100 p-4 md:p-8 text-slate-800">
+        <main className="min-h-screen bg-background p-4 md:p-8 text-slate-800">
             <div className="max-w-4xl mx-auto space-y-6">
 
                 {/* BARRA SUPERIOR DO PERFIL LOGADO */}
-                <div className="flex items-center justify-between bg-slate-800 text-white px-5 py-3 rounded-xl text-sm">
-                    <div>
-                        Perfil ativo: <strong>{usuarioLogado.nome}</strong>{" "}
-                        <span className="text-slate-400 hidden sm:inline">
-              ({usuarioLogado.email})
-            </span>
+                <div className="flex items-center justify-between bg-r4-marrom text-white px-5 py-3 rounded-xl text-sm shadow-xs">
+                    <div className="flex items-center gap-3">
+                        <img
+                            src="/logo-r4.png"
+                            alt="Logo R4"
+                            className="w-8 h-8 rounded-full bg-white p-0.5 object-contain shrink-0"
+                        />
+                        <div>
+                            Perfil ativo: <strong>{usuarioLogado.nome}</strong>{" "}
+                            <span className="text-stone-300 hidden sm:inline">
+                                ({usuarioLogado.email})
+                            </span>
+                        </div>
                     </div>
                     <button
                         type="button"
                         onClick={handleSair}
-                        className="bg-slate-700 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                        className="bg-white/10 hover:bg-r4-vermelho text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
                     >
                         Sair / Trocar Conta
                     </button>
@@ -576,13 +681,20 @@ export default function ControleReforcoPage() {
                 {/* CABEÇALHO E TERMÔMETRO DA META */}
                 <header className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                        <div>
-                            <h1 className="text-2xl font-bold text-slate-900">
-                                Controle de Matrículas — Reforço Escolar
-                            </h1>
-                            <p className="text-sm text-slate-500">
-                                Registro rápido de atendimentos fechados
-                            </p>
+                        <div className="flex items-center gap-4">
+                            <img
+                                src="/logo-r4.png"
+                                alt="Logo R4"
+                                className="w-14 h-14 rounded-2xl bg-white p-1 border border-slate-200 shadow-xs object-contain shrink-0"
+                            />
+                            <div>
+                                <h1 className="text-2xl font-bold text-r4-marrom">
+                                    Controle de Matrículas — R4
+                                </h1>
+                                <p className="text-sm text-slate-500">
+                                    Registro rápido de atendimentos fechados
+                                </p>
+                            </div>
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3">
@@ -594,7 +706,7 @@ export default function ControleReforcoPage() {
                                     type="month"
                                     value={mesFiltro}
                                     onChange={(e) => setMesFiltro(e.target.value)}
-                                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white"
+                                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 />
                             </div>
 
@@ -608,7 +720,7 @@ export default function ControleReforcoPage() {
                                     value={metaMensal}
                                     onChange={(e) => setMetaMensal(Number(e.target.value))}
                                     onBlur={handleSalvarMetaNoBanco}
-                                    className="w-20 border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white"
+                                    className="w-20 border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 />
                             </div>
                         </div>
@@ -616,25 +728,51 @@ export default function ControleReforcoPage() {
 
                     <div className="mt-5">
                         <div className="flex justify-between text-sm font-medium mb-1">
-              <span>
-                Progresso: {fechamentosDoMes.length} de {metaMensal} alunos fechados
-              </span>
-                            <span className="text-blue-600">{porcentagemMeta}%</span>
+                            <span>
+                                Progresso: {fechamentosDoMes.length} de {metaMensal} alunos fechados
+                            </span>
+                            <span className="text-r4-petroleo font-bold">{porcentagemMeta}%</span>
                         </div>
                         <div className="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
                             <div
-                                className="bg-blue-600 h-3 rounded-full transition-all duration-300"
+                                className="bg-r4-petroleo h-3 rounded-full transition-all duration-300"
                                 style={{ width: `${porcentagemMeta}%` }}
                             />
                         </div>
                     </div>
                 </header>
 
-                {/* FORMULÁRIO DE CADASTRO */}
-                <section className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <h2 className="text-lg font-semibold mb-4 text-slate-900">
-                        Novo Fechamento
-                    </h2>
+                {/* FORMULÁRIO DE CADASTRO / EDIÇÃO */}
+                <section
+                    ref={formRef}
+                    className={`bg-white p-6 rounded-xl shadow-sm transition-colors ${
+                        editandoId !== null
+                            ? "border-2 border-r4-petroleo"
+                            : "border border-slate-200"
+                    }`}
+                >
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2.5">
+                            <h2 className="text-lg font-semibold text-r4-marrom">
+                                {editandoId !== null ? "Editar Fechamento" : "Novo Fechamento"}
+                            </h2>
+                            {editandoId !== null && (
+                                <span className="bg-r4-petroleo/15 text-r4-petroleo-escuro text-xs font-semibold px-2.5 py-0.5 rounded-full">
+                                    Modo Edição
+                                </span>
+                            )}
+                        </div>
+
+                        {editandoId !== null && (
+                            <button
+                                type="button"
+                                onClick={handleCancelarEdicao}
+                                className="text-xs font-medium text-slate-500 hover:text-r4-vermelho underline cursor-pointer"
+                            >
+                                Cancelar edição
+                            </button>
+                        )}
+                    </div>
 
                     <form onSubmit={handleSalvarFechamento} className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
@@ -646,7 +784,7 @@ export default function ControleReforcoPage() {
                                 placeholder="Ex: Maria Oliveira"
                                 value={responsavel}
                                 onChange={(e) => setResponsavel(e.target.value)}
-                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 required
                             />
                         </div>
@@ -660,7 +798,7 @@ export default function ControleReforcoPage() {
                                 placeholder="Ex: Lucas Oliveira"
                                 value={aluno}
                                 onChange={(e) => setAluno(e.target.value)}
-                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 required
                             />
                         </div>
@@ -672,12 +810,12 @@ export default function ControleReforcoPage() {
                                 <select
                                     value={escolaSelecionada}
                                     onChange={(e) => setEscolaSelecionada(e.target.value)}
-                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 >
-                                    {escolas.length === 0 && (
+                                    {opcoesSelectEscolas.length === 0 && (
                                         <option value="">Nenhum colégio cadastrado</option>
                                     )}
-                                    {escolas.map((esc) => (
+                                    {opcoesSelectEscolas.map((esc) => (
                                         <option key={esc} value={esc}>
                                             {esc}
                                         </option>
@@ -696,7 +834,7 @@ export default function ControleReforcoPage() {
                                     onClick={handleRemoverEscola}
                                     disabled={escolas.length === 0}
                                     title="Remover colégio selecionado"
-                                    className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-40 rounded-lg font-bold text-red-700 cursor-pointer"
+                                    className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-40 rounded-lg font-bold text-r4-vermelho cursor-pointer"
                                 >
                                     -
                                 </button>
@@ -709,12 +847,12 @@ export default function ControleReforcoPage() {
                                         placeholder="Nome do novo colégio..."
                                         value={textoNovaEscola}
                                         onChange={(e) => setTextoNovaEscola(e.target.value)}
-                                        className="w-full border border-blue-400 rounded-lg px-3 py-1.5 text-sm"
+                                        className="w-full border border-r4-petroleo rounded-lg px-3 py-1.5 text-sm focus:outline-none"
                                     />
                                     <button
                                         type="button"
                                         onClick={handleAdicionarEscola}
-                                        className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 cursor-pointer"
+                                        className="px-3 py-1.5 bg-r4-petroleo text-white text-sm rounded-lg hover:bg-r4-petroleo-escuro cursor-pointer"
                                     >
                                         OK
                                     </button>
@@ -729,12 +867,12 @@ export default function ControleReforcoPage() {
                                 <select
                                     value={serieSelecionada}
                                     onChange={(e) => setSerieSelecionada(e.target.value)}
-                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
                                 >
-                                    {series.length === 0 && (
+                                    {opcoesSelectSeries.length === 0 && (
                                         <option value="">Nenhuma série cadastrada</option>
                                     )}
-                                    {series.map((ser) => (
+                                    {opcoesSelectSeries.map((ser) => (
                                         <option key={ser} value={ser}>
                                             {ser}
                                         </option>
@@ -753,7 +891,7 @@ export default function ControleReforcoPage() {
                                     onClick={handleRemoverSerie}
                                     disabled={series.length === 0}
                                     title="Remover série selecionada"
-                                    className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-40 rounded-lg font-bold text-red-700 cursor-pointer"
+                                    className="px-3 py-2 bg-red-100 hover:bg-red-200 disabled:opacity-40 rounded-lg font-bold text-r4-vermelho cursor-pointer"
                                 >
                                     -
                                 </button>
@@ -763,15 +901,15 @@ export default function ControleReforcoPage() {
                                 <div className="mt-2 flex gap-2">
                                     <input
                                         type="text"
-                                        placeholder="Ex: Pré-Vestibular..."
+                                        placeholder="Nome da nova série..."
                                         value={textoNovaSerie}
                                         onChange={(e) => setTextoNovaSerie(e.target.value)}
-                                        className="w-full border border-blue-400 rounded-lg px-3 py-1.5 text-sm"
+                                        className="w-full border border-r4-petroleo rounded-lg px-3 py-1.5 text-sm focus:outline-none"
                                     />
                                     <button
                                         type="button"
                                         onClick={handleAdicionarSerie}
-                                        className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 cursor-pointer"
+                                        className="px-3 py-1.5 bg-r4-petroleo text-white text-sm rounded-lg hover:bg-r4-petroleo-escuro cursor-pointer"
                                     >
                                         OK
                                     </button>
@@ -779,6 +917,7 @@ export default function ControleReforcoPage() {
                             )}
                         </div>
 
+                        {/* Data do Fechamento */}
                         <div>
                             <label className="block text-sm font-medium mb-1">
                                 Data do Fechamento
@@ -787,77 +926,197 @@ export default function ControleReforcoPage() {
                                 type="date"
                                 value={dataFechamento}
                                 onChange={(e) => setDataFechamento(e.target.value)}
-                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                required
                             />
                         </div>
 
-                        <div className="flex items-end">
+                        {/* Botão Principal de Envio / Atualização */}
+                        <div className="flex items-end gap-2">
                             <button
                                 type="submit"
                                 disabled={salvando}
-                                className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-2 px-4 rounded-lg transition-colors cursor-pointer"
+                                className={`w-full disabled:opacity-60 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors cursor-pointer ${
+                                    editandoId !== null
+                                        ? "bg-r4-petroleo hover:bg-r4-petroleo-escuro"
+                                        : "bg-r4-terracota hover:bg-r4-terracota-escuro"
+                                }`}
                             >
-                                {salvando ? "Salvando no banco..." : "Registrar Aluno Fechado"}
+                                {salvando
+                                    ? "Salvando..."
+                                    : editandoId !== null
+                                        ? "Salvar Alterações"
+                                        : "Registrar Aluno Fechado"}
                             </button>
+
+                            {editandoId !== null && (
+                                <button
+                                    type="button"
+                                    onClick={handleCancelarEdicao}
+                                    className="px-4 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-medium text-sm rounded-lg transition-colors cursor-pointer"
+                                >
+                                    Cancelar
+                                </button>
+                            )}
                         </div>
                     </form>
                 </section>
 
                 {/* LISTAGEM DOS ALUNOS FECHADOS NO MÊS */}
                 <section className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                        <h2 className="text-lg font-semibold text-slate-900">
-                            Alunos Fechados no Mês ({fechamentosDoMes.length})
-                        </h2>
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                        <div>
+                            <h2 className="text-lg font-semibold text-r4-marrom">
+                                Alunos Fechados no Mês ({fechamentosDoMes.length})
+                            </h2>
+                            {temFiltroAtivo && (
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                    Exibindo <strong>{fechamentosFiltrados.length}</strong> de{" "}
+                                    {fechamentosDoMes.length} registros filtrados
+                                </p>
+                            )}
+                        </div>
 
                         <button
                             type="button"
                             onClick={handleCopiarRelatorio}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                            className={`px-4 py-2 rounded-lg text-sm font-medium text-white transition-colors cursor-pointer ${
+                                copiado
+                                    ? "bg-emerald-600"
+                                    : "bg-r4-petroleo hover:bg-r4-petroleo-escuro"
+                            }`}
                         >
-                            {copiado ? "✓ Copiado para o WhatsApp!" : "Copiar Relatório do Mês"}
+                            {copiado
+                                ? "Relatório Copiado!"
+                                : temFiltroAtivo
+                                    ? "Copiar Lista Filtrada"
+                                    : "Copiar Relatório do Mês"}
                         </button>
                     </div>
 
+                    {/* BARRA DE BUSCA E FILTROS */}
+                    {fechamentosDoMes.length > 0 && (
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 mb-4 space-y-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                                <input
+                                    type="text"
+                                    placeholder="Buscar aluno ou responsável..."
+                                    value={buscaTexto}
+                                    onChange={(e) => setBuscaTexto(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                />
+
+                                <select
+                                    value={filtroEscola}
+                                    onChange={(e) => setFiltroEscola(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                >
+                                    <option value="">Todos os colégios</option>
+                                    {opcoesFiltroEscolas.map((esc) => (
+                                        <option key={esc} value={esc}>
+                                            {esc}
+                                        </option>
+                                    ))}
+                                </select>
+
+                                <select
+                                    value={filtroSerie}
+                                    onChange={(e) => setFiltroSerie(e.target.value)}
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-r4-petroleo"
+                                >
+                                    <option value="">Todas as séries</option>
+                                    {opcoesFiltroSeries.map((ser) => (
+                                        <option key={ser} value={ser}>
+                                            {ser}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {temFiltroAtivo && (
+                                <div className="flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={handleLimparFiltros}
+                                        className="text-xs font-medium text-r4-terracota hover:underline cursor-pointer"
+                                    >
+                                        Limpar busca e filtros
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {fechamentosDoMes.length === 0 ? (
-                        <p className="text-sm text-slate-500 text-center py-6">
-                            Nenhum fechamento registrado para este mês ainda.
+                        <p className="text-sm text-slate-500 py-6 text-center">
+                            Nenhum aluno fechado registrado para este mês ainda.
                         </p>
+                    ) : fechamentosFiltrados.length === 0 ? (
+                        <div className="py-6 text-center space-y-2">
+                            <p className="text-sm text-slate-500">
+                                Nenhum aluno encontrado com os filtros selecionados.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={handleLimparFiltros}
+                                className="text-xs font-medium text-r4-petroleo hover:underline cursor-pointer"
+                            >
+                                Mostrar todos os alunos do mês
+                            </button>
+                        </div>
                     ) : (
                         <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse text-sm">
                                 <thead>
                                 <tr className="border-b border-slate-200 text-slate-500">
-                                    <th className="py-2 px-3">Aluno</th>
-                                    <th className="py-2 px-3">Responsável</th>
-                                    <th className="py-2 px-3">Série / Colégio</th>
-                                    <th className="py-2 px-3">Data</th>
-                                    <th className="py-2 px-3 text-right">Ação</th>
+                                    <th className="py-2.5 pr-4 font-medium">Aluno</th>
+                                    <th className="py-2.5 px-4 font-medium">Responsável</th>
+                                    <th className="py-2.5 px-4 font-medium">Série / Colégio</th>
+                                    <th className="py-2.5 px-4 font-medium">Data</th>
+                                    <th className="py-2.5 pl-4 font-medium text-right">Ações</th>
                                 </tr>
                                 </thead>
-                                <tbody>
-                                {fechamentosDoMes.map((item) => {
+                                <tbody className="divide-y divide-slate-100">
+                                {fechamentosFiltrados.map((item) => {
                                     const [ano, mes, dia] = item.data.split("-");
+                                    const estaEmEdicao = editandoId === item.id;
+
                                     return (
-                                        <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50">
-                                            <td className="py-2.5 px-3 font-medium text-slate-900">
+                                        <tr
+                                            key={item.id}
+                                            className={
+                                                estaEmEdicao
+                                                    ? "bg-r4-petroleo/10"
+                                                    : "hover:bg-slate-50"
+                                            }
+                                        >
+                                            <td className="py-3 pr-4 font-medium text-slate-900">
                                                 {item.aluno}
                                             </td>
-                                            <td className="py-2.5 px-3">{item.responsavel}</td>
-                                            <td className="py-2.5 px-3">
-                          <span className="inline-block bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs font-medium mr-1.5">
-                            {item.serie}
-                          </span>
+                                            <td className="py-3 px-4 text-slate-600">
+                                                {item.responsavel}
+                                            </td>
+                                            <td className="py-3 px-4">
+                                                    <span className="inline-block bg-r4-petroleo/10 text-r4-petroleo-escuro font-medium px-2 py-0.5 rounded-md text-xs mr-2">
+                                                        {item.serie}
+                                                    </span>
                                                 <span className="text-slate-600">{item.escola}</span>
                                             </td>
-                                            <td className="py-2.5 px-3 text-slate-500">
+                                            <td className="py-3 px-4 text-slate-600">
                                                 {`${dia}/${mes}/${ano}`}
                                             </td>
-                                            <td className="py-2.5 px-3 text-right">
+                                            <td className="py-3 pl-4 text-right whitespace-nowrap space-x-3">
                                                 <button
                                                     type="button"
-                                                    onClick={() => handleRemoverFechamento(item.id)}
-                                                    className="text-red-500 hover:text-red-700 text-xs font-medium cursor-pointer"
+                                                    onClick={() => handleIniciarEdicao(item)}
+                                                    className="text-r4-petroleo-escuro hover:underline text-xs font-semibold cursor-pointer"
+                                                >
+                                                    Editar
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleRemoverFechamento(item)}
+                                                    className="text-r4-vermelho hover:underline text-xs font-medium cursor-pointer"
                                                 >
                                                     Excluir
                                                 </button>
