@@ -83,15 +83,11 @@ export default function ControleReforcoPage() {
     const [serieSelecionada, setSerieSelecionada] = useState<string>(SERIES_PADRAO[0]);
 
     //Passa uma função () => ... dentro do useState para calcular a data de hoje
-    const [dataFechamento, setDataFechamento] = useState<string>(
-        () => new Date().toISOString().split("T")[0]
-    );
+    const [dataFechamento, setDataFechamento] = useState<string>("");
 
-    //Estado da meta e da lista principal de alunos fechados:
+   // Estado da meta e da lista principal de alunos fechados:
     const [metaMensal, setMetaMensal] = useState<number>(15);
-    const [mesFiltro, setMesFiltro] = useState<string>(
-        () => new Date().toISOString().slice(0, 7)
-    );
+    const [mesFiltro, setMesFiltro] = useState<string>("");
 
     const [fechamentos, setFechamentos] = useState<Fechamento[]>([]);
     const [salvando, setSalvando] = useState<boolean>(false);
@@ -155,6 +151,10 @@ export default function ControleReforcoPage() {
 
     // useEffect: Roda UMA VEZ quando a página abre para checar se você já está logado no Supabase
     useEffect(() => {
+        const hoje = new Date();
+        setDataFechamento(hoje.toISOString().split("T")[0]);
+        setMesFiltro(hoje.toISOString().slice(0, 7));
+
         async function verificarSessao() {
             const { data: { session } } = await supabase.auth.getSession();
 
